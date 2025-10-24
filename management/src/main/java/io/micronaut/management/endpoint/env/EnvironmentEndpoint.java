@@ -63,24 +63,30 @@ public class EnvironmentEndpoint {
      * @param environment The {@link Environment}
      */
     public EnvironmentEndpoint(Environment environment) {
-        this(environment, null);
+        this(environment, null, null);
     }
 
     /**
      * @param environment The {@link Environment}
      * @param environmentFilter The registered {@link EnvironmentEndpointFilter} bean if one is registered
+     * @param activeKeys The configured active keys for the endpoint (bound from configuration property {@code endpoints.env.keys}).
+     *                   If null, the default sections are used.
      */
     @Inject
     public EnvironmentEndpoint(Environment environment,
-                               @Nullable EnvironmentEndpointFilter environmentFilter) {
+                               @Nullable EnvironmentEndpointFilter environmentFilter,
+                               @Nullable @io.micronaut.context.annotation.Value("${endpoints.env.keys}") List<String> activeKeys) {
         this.environment = environment;
         this.environmentFilter = environmentFilter;
+        if (activeKeys != null) {
+            this.activeKeys = activeKeys;
+        }
     }
 
     /**
      * Gets the keys to be displayed by the environment endpoint.
      * Defaults to ["activeEnvironments", "packages", "propertySources"] if not configured.
-     * Configurable via {@code endpoints.env.active-keys}.
+     * Configurable via {@code endpoints.env.keys}.
      *
      * @return The list of active sections.
      */
