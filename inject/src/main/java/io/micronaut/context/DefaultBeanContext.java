@@ -3283,6 +3283,7 @@ public class DefaultBeanContext implements InitializableBeanContext, Configurabl
                                                     Qualifier<T> qualifier,
                                                     boolean throwNonUnique,
                                                     Collection<BeanDefinition<T>> candidates) {
+        // Prefer @Primary if present among initial candidates
         if (candidates.size() > 1) {
             List<BeanDefinition<T>> primary = candidates.stream()
                 .filter(BeanDefinition::isPrimary)
@@ -3294,7 +3295,10 @@ public class DefaultBeanContext implements InitializableBeanContext, Configurabl
         if (candidates.size() == 1) {
             return candidates.iterator().next();
         }
+
         Collection<BeanDefinition<T>> originalCandidates = candidates;
+
+        // Exclude @Secondary candidates first
         candidates = candidates.stream().filter(candidate -> !candidate.hasDeclaredStereotype(Secondary.class)).toList();
         if (candidates.size() == 1) {
             return candidates.iterator().next();
@@ -3302,13 +3306,51 @@ public class DefaultBeanContext implements InitializableBeanContext, Configurabl
         if (candidates.isEmpty()) {
             throw new NonUniqueBeanException(beanType.getType(), originalCandidates.iterator());
         }
-        // pick the bean with the highest priority
+
+        // Prefer candidates that have concrete type arguments for the requested bean type.
+        // This will prioritize implementations like GenericRepository<Foo> over open generics like GenericRepositoryImpl<T>.
+        List<BeanDefinition<T>> typeSpecific = candidates.stream()
+            .filter(candidate -> {
+                try {
+                    List<Argument<?>> typeArgs = candidate.getTypeArguments(beanType.getType());
+                    Argument<?> lastArg = CollectionUtils.last(typeArgs);
+                    // Consider a candidate "type-specific" if the resolved type argument is a concrete type
+                    // (not null and not Object.class which indicates an unresolved type variable)
+                    return lastArg != null && lastArg.getType() != Object.class;
+                } catch (Exception e) {
+                    // Defensive: if type argument resolution fails, treat as non-specific
+                    return false;
+                }
+            })
+            .toList();
+
+        if (typeSpecific.size() == 1) {
+            return typeSpecific.get(0);
+        } else if (typeSpecific.size() > 1) {
+            // Narrow down to only the type-specific candidates and continue the tie-breaking logic
+            candidates = typeSpecific;
+        }
+
+        // pick the bean with the highest priority (order)
         ArrayList<BeanDefinition<T>> listCandidates = new ArrayList<>(candidates);
         listCandidates.sort(OrderUtil.ORDERED_COMPARATOR);
+
+        // Defensive checks: ensure there are enough candidates before accessing two elements
+        int lcSize = listCandidates.size();
+        if (lcSize == 1) {
+            return listCandidates.get(0);
+        }
+        if (lcSize < 2) {
+            if (throwNonUnique) {
+                return findConcreteCandidate(beanType.getType(), qualifier, candidates);
+            }
+            return null;
+        }
+
         Iterator<BeanDefinition<T>> iterator = listCandidates.iterator();
         final BeanDefinition<T> bean = iterator.next();
         final BeanDefinition<T> next = iterator.next();
-        // We should have at least two beans - no need for next checks
+
         // Check there are not 2 beans with the same order
         if (bean.getOrder() != next.getOrder()) {
             LOG.debug("Picked bean {} with the highest precedence for type {} and qualifier {}", bean, beanType, null);
@@ -3327,10 +3369,13 @@ public class DefaultBeanContext implements InitializableBeanContext, Configurabl
                 }
             }
         }
+
+        // exact raw-type match fallback
         Collection<BeanDefinition<T>> exactMatches = filterExactMatch(beanType.getType(), candidates);
         if (exactMatches.size() == 1) {
             return exactMatches.iterator().next();
         }
+
         if (throwNonUnique) {
             return findConcreteCandidate(beanType.getType(), qualifier, candidates);
         }

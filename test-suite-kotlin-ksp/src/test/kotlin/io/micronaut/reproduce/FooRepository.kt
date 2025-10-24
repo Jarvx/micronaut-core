@@ -1,0 +1,6 @@
+package io.micronaut.reproduce
+
+import jakarta.inject.Singleton
+
+@Singleton
+class FooRepository : GenericRepository<Foo>
