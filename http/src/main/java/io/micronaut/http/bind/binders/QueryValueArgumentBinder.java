@@ -34,7 +34,9 @@ import io.micronaut.http.uri.UriMatchVariable;
 
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.lang.reflect.Array;
 
 /**
  * A binder for binding arguments annotated with @QueryValue.
@@ -151,6 +153,13 @@ public class QueryValueArgumentBinder<T> extends AbstractArgumentBinder<T> imple
     private BindingResult<T> bindPojo(ArgumentConversionContext<T> context,
                                       ConvertibleMultiValues<String> parameters,
                                       Argument<T> argument) {
+        // First, try to convert the whole parameters map into the target bean directly.
+        // This allows converters that support Map -> bean conversion to handle the binding.
+        Optional<T> mapConverted = conversionService.convert((Map) parameters.asMap(), context);
+        if (mapConverted.isPresent()) {
+            return () -> mapConverted;
+        }
+
         Optional<BeanIntrospection<T>> introspectionOpt = BeanIntrospector.SHARED.findIntrospection(argument.getType());
         if (introspectionOpt.isEmpty()) {
             return BindingResult.unsatisfied();
@@ -171,22 +180,42 @@ public class QueryValueArgumentBinder<T> extends AbstractArgumentBinder<T> imple
 
             ArgumentConversionContext<?> conversionContext = context.with(builderArg);
             Optional<?> converted = hasNoValue ? conversionService.convert(defaultValue, conversionContext) : conversionService.convert(values, conversionContext);
-            if (converted.isPresent()) {
-                try {
-                    @SuppressWarnings({"unchecked"})
-                    Argument<Object> rawArg = (Argument<Object>) builderArg;
+
+            try {
+                @SuppressWarnings({"unchecked"})
+                Argument<Object> rawArg = (Argument<Object>) builderArg;
+                if (converted.isPresent()) {
                     introspectionBuilder.with(index, rawArg, converted.get());
-                } catch (Exception e) {
-                    context.reject(builderArg, e);
-                    return BindingResult.unsatisfied();
+                } else if (conversionContext.hasErrors()) {
+                    ConversionError conversionError = conversionContext.getLastError().orElse(null);
+                    if (conversionError != null) {
+                        Exception cause = conversionError.getCause();
+                        context.reject(builderArg, cause);
+                        return BindingResult.unsatisfied();
+                    } else {
+                        context.reject(builderArg, new IllegalStateException("Conversion failed for argument: " + builderArg.getName()));
+                        return BindingResult.unsatisfied();
+                    }
+                } else {
+                    // No converted value and no errors: supply a sensible empty/default value or null
+                    Object chosenValue;
+                    Class<?> type = builderArg.getType();
+                    if (Optional.class.isAssignableFrom(type)) {
+                        chosenValue = Optional.empty();
+                    } else if (Iterable.class.isAssignableFrom(type)) {
+                        chosenValue = Collections.emptyList();
+                    } else if (Map.class.isAssignableFrom(type)) {
+                        chosenValue = Collections.emptyMap();
+                    } else if (type.isArray()) {
+                        chosenValue = Array.newInstance(type.getComponentType(), 0);
+                    } else {
+                        chosenValue = null;
+                    }
+                    introspectionBuilder.with(index, rawArg, chosenValue);
                 }
-            } else if (conversionContext.hasErrors()) {
-                ConversionError conversionError = conversionContext.getLastError().orElse(null);
-                if (conversionError != null) {
-                    Exception cause = conversionError.getCause();
-                    context.reject(builderArg, cause);
-                    return BindingResult.unsatisfied();
-                }
+            } catch (Exception e) {
+                context.reject(builderArg, e);
+                return BindingResult.unsatisfied();
             }
         }
 
